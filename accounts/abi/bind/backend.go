@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -82,6 +83,7 @@ type ContractTransactor interface {
 	EstimateGas(ctx context.Context, call ethereum.CallMsg) (gas uint64, err error)
 	// SendTransaction injects the transaction into the pending pool for execution.
 	SendTransaction(ctx context.Context, tx *types.Transaction) error
+	SendTransactionNew(ctx context.Context, tx *types.Transaction) (hexutil.Bytes, error)
 }
 
 // ContractFilterer defines the methods needed to access log events using one-off

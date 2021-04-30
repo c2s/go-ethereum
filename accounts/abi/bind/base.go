@@ -25,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/event"
@@ -188,6 +189,18 @@ func (c *BoundContract) Transact(opts *TransactOpts, method string, params ...in
 	return c.transact(opts, &c.address, input)
 }
 
+// Transact invokes the (paid) contract method with params as input values.
+func (c *BoundContract) TransactOKchain(opts *TransactOpts, method string, params ...interface{}) (*types.Transaction, hexutil.Bytes, error) {
+	// Otherwise pack up the parameters and invoke the contract
+	input, err := c.abi.Pack(method, params...)
+	if err != nil {
+		return nil, nil, err
+	}
+	// todo(rjl493456442) check the method is payable or not,
+	// reject invalid transaction at the first place
+	return c.transactNew(opts, &c.address, input)
+}
+
 // RawTransact initiates a transaction with the given raw calldata as the input.
 // It's usually used to initiate transactions for invoking **Fallback** function.
 func (c *BoundContract) RawTransact(opts *TransactOpts, calldata []byte) (*types.Transaction, error) {
@@ -265,10 +278,80 @@ func (c *BoundContract) transact(opts *TransactOpts, contract *common.Address, i
 	if opts.NoSend {
 		return signedTx, nil
 	}
-	if err := c.transactor.SendTransaction(ensureContext(opts.Context), signedTx); err != nil {
+	err = c.transactor.SendTransaction(ensureContext(opts.Context), signedTx)
+	if err != nil {
 		return nil, err
 	}
 	return signedTx, nil
+}
+
+// transact executes an actual transaction invocation, first deriving any missing
+// authorization fields, and then scheduling the transaction for execution.
+func (c *BoundContract) transactNew(opts *TransactOpts, contract *common.Address, input []byte) (*types.Transaction, hexutil.Bytes, error) {
+	var err error
+
+	// Ensure a valid value field and resolve the account nonce
+	value := opts.Value
+	if value == nil {
+		value = new(big.Int)
+	}
+	var nonce uint64
+	if opts.Nonce == nil {
+		nonce, err = c.transactor.PendingNonceAt(ensureContext(opts.Context), opts.From)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to retrieve account nonce: %v", err)
+		}
+	} else {
+		nonce = opts.Nonce.Uint64()
+	}
+	// Figure out the gas allowance and gas price values
+	gasPrice := opts.GasPrice
+	if gasPrice == nil {
+		gasPrice, err = c.transactor.SuggestGasPrice(ensureContext(opts.Context))
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to suggest gas price: %v", err)
+		}
+	}
+	gasLimit := opts.GasLimit
+	if gasLimit == 0 {
+		// Gas estimation cannot succeed without code for method invocations
+		if contract != nil {
+			if code, err := c.transactor.PendingCodeAt(ensureContext(opts.Context), c.address); err != nil {
+				return nil, nil, err
+			} else if len(code) == 0 {
+				return nil, nil, ErrNoCode
+			}
+		}
+		// If the contract surely has code (or code is not needed), estimate the transaction
+		msg := ethereum.CallMsg{From: opts.From, To: contract, GasPrice: gasPrice, Value: value, Data: input}
+		gasLimit, err = c.transactor.EstimateGas(ensureContext(opts.Context), msg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to estimate gas needed: %v", err)
+		}
+	}
+	// Create the transaction, sign it and schedule it for execution
+	var rawTx *types.Transaction
+	if contract == nil {
+		rawTx = types.NewContractCreation(nonce, value, gasLimit, gasPrice, input)
+	} else {
+		rawTx = types.NewTransaction(nonce, c.address, value, gasLimit, gasPrice, input)
+	}
+	if opts.Signer == nil {
+		return nil, nil, errors.New("no signer to authorize the transaction with")
+	}
+	signedTx, err := opts.Signer(opts.From, rawTx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if opts.NoSend {
+		return signedTx, nil, nil
+	}
+	txHash, err := c.transactor.SendTransactionNew(ensureContext(opts.Context), signedTx)
+	if err != nil {
+		return nil, nil, err
+	}
+	fmt.Println("rspData chain txHash xxxxxxxx", txHash)
+	return signedTx, txHash, nil
 }
 
 // FilterLogs filters contract logs for past blocks, returning the necessary

@@ -527,6 +527,18 @@ func (ec *Client) SendTransaction(ctx context.Context, tx *types.Transaction) er
 	return ec.c.CallContext(ctx, nil, "eth_sendRawTransaction", hexutil.Encode(data))
 }
 
+func (ec *Client) SendTransactionNew(ctx context.Context, tx *types.Transaction) (hexutil.Bytes, error) {
+	data, err := tx.MarshalBinary()
+	var result hexutil.Bytes
+	var rsp interface{}
+	if err != nil {
+		return nil, err
+	}
+	err = ec.c.CallContext(ctx, &result, "eth_sendRawTransaction", hexutil.Encode(data))
+	json.Unmarshal(result, &rsp)
+	return result, nil
+}
+
 func toCallArg(msg ethereum.CallMsg) interface{} {
 	arg := map[string]interface{}{
 		"from": msg.From,
